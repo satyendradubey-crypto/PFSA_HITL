@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PF Support — HITL Review Queue</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+  <style>
+    body           { background:#f4f6f9; font-family:'Segoe UI',sans-serif; }
+    .navbar        { background:#4a154b; }
+    .navbar-brand  { color:#fff !important; font-weight:600; }
+    .card          { border:none; box-shadow:0 1px 4px rgba(0,0,0,.1); margin-bottom:16px; }
+    .section-title { font-size:1.1rem; font-weight:600; margin:24px 0 12px; }
+    .email-body    { background:#f8f9fa; border-radius:4px; padding:8px;
+                     font-size:.85rem; white-space:pre-wrap; max-height:100px;
+                     overflow:hidden; cursor:pointer; transition: max-height 0.3s; }
+    .email-body.expanded { max-height:600px; }
+    .expiry-warn   { color:#c0392b; font-weight:500; }
+    .badge-unsure    { background:#f0ad4e; color:#fff; }
+    .badge-external  { background:#5bc0de; color:#fff; }
+    .badge-pending   { background:#f0ad4e; color:#fff; }
+    .badge-approved  { background:#5cb85c; color:#fff; }
+    .badge-rejected  { background:#d9534f; color:#fff; }
+    .badge-expired   { background:#999;    color:#fff; }
+    .spinner-wrap  { text-align:center; padding:40px; }
+    .btn-approve   { background:#5cb85c; color:#fff; border:none; }
+    .btn-approve:hover { background:#4cae4c; color:#fff; }
+    .btn-reject    { background:#d9534f; color:#fff; border:none; }
+    .btn-reject:hover  { background:#c9302c; color:#fff; }
+  </style>
+</head>
+<body>
+
+<nav class="navbar navbar-dark mb-4">
+  <div class="container d-flex justify-content-between">
+    <span class="navbar-brand">🔍 PF Support — HITL Review Queue</span>
+    <button class="btn btn-sm btn-outline-light" onclick="loadReviews()">↺ Refresh</button>
+  </div>
+</nav>
+
+<div class="container pb-5">
+
+  <!-- Pending -->
+  <div class="section-title">
+    ⏳ Pending Reviews
+    <span id="pending-count" class="badge bg-danger ms-2">0</span>
+  </div>
+  <div id="pending-container">
+    <div class="spinner-wrap">
+      <div class="spinner-border text-secondary" role="status"></div>
+    </div>
+  </div>
+
+  <!-- Resolved -->
+  <div class="section-title mt-4">
+    ✅ Recently Resolved
+    <span id="resolved-count" class="badge bg-secondary ms-2">0</span>
+  </div>
+  <div id="resolved-container">
+    <div class="text-muted small">Loading...</div>
+  </div>
+
+</div>
+
+<!-- Decision Modal -->
+<div class="modal fade" id="decisionModal" tabindex="-1">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="modal-title">Confirm Decision</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body" id="modal-body">Are you sure?</div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button type="button" class="btn" id="modal-confirm-btn" onclick="submitDecision()">Confirm</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+<script>
+
+  // ── CONFIG ──────────────────────────────────────────────────
+  // Replace these with your actual values
+  const SUPABASE_URL     = 'https://hvxgzvqfqlldqhiiprqq.supabase.co';
+  const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imh2eGd6dnFmcWxsZHFoaWlwcnFxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODc2MjgyNjIsImV4cCI6MjEwMzIwNDI2Mn0.zp1DA8A0eH1YjOUuFSi6jrYMfVE3vleZ_XuER3Dm1kg';
+  const PF_API_KEY        = 'magicplatform.e013B95FB9454CE7a14BadEF301e98D2';
+  const TABLE             = 'HITL_Reviews';
+  // ────────────────────────────────────────────────────────────
+
+  let pendingDecision = null; // { id, callbackUrl, decision, token }
+  let decisionModal   = null;
+
+  // ── LOAD REVIEWS ───────────────────────────────────────────
+  async function loadReviews() {
+    // Mark expired rows first
+    await markExpired();
+
+    // Fetch pending
+    const pending = await fetchRows('PENDING');
+    // Fetch last 20 resolved
+    const resolved = await fetchRows(null, 20);
+
+    renderPending(pending);
+    renderResolved(resolved.filter(r => r.status !== 'PENDING'));
+  }
+
+  async function fetchRows(status, limit = 100) {
+    let url = `${SUPABASE_URL}/rest/v1/${TABLE}?order=received_at.desc&limit=${limit}`;
+    if (status) url += `&status=eq.${status}`;
+
+    const res = await fetch(url, {
+      headers: {
+        'apikey'       : SUPABASE_ANON_KEY,
+        'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
+        'Content-Type' : 'application/json'
+      }
+    });
+    return res.ok ? await res.json() : [];
+  }
+
+  async function markExpired() {
+    const now = new Date().toISOString();
+    await fetch(`${SUPABASE_URL}/rest/v1/${TABLE}?status=eq.PENDING&expires_at=lt.${now}`, {
+      method : 'PATCH',
+      headers: {
+        'apikey'        : SUPABASE_ANON_KEY,
+        'Authorization' : `Bearer ${SUPABASE_ANON_KEY}`,
+        'Content-Type'  : 'application/json',
+        'Prefer'        : 'return=minimal'
+      },
+      body: JSON.stringify({ status: 'EXPIRED' })
+    });
+  }
+
+  // ── RENDER PENDING ─────────────────────────────────────────
+  function renderPending(rows) {
+    const container = document.getElementById('pending-container');
+    document.getElementById('pending-count').textContent = rows.length;
+
+    if (rows.length === 0) {
+      container.innerHTML = '<div class="alert alert-success">No pending reviews. All clear! ✅</div>';
+      return;
+    }
+    container.innerHTML = rows.map(r => buildCard(r, true)).join('');
+  }
+
+  // ── RENDER RESOLVED ────────────────────────────────────────
+  function renderResolved(rows) {
+    const container = document.getElementById('resolved-container');
+    document.getElementById('resolved-count').textContent = rows.length;
+
+    if (rows.length === 0) {
+      container.innerHTML = '<div class="text-muted small">No resolved reviews yet.</div>';
+      return;
+    }
+    container.innerHTML = rows.map(r => buildCard(r, false)).join('');
+  }
+
+  // ── BUILD CARD ─────────────────────────────────────────────
+  function buildCard(row, isPending) {
+    const id               = row.id;
+    const callbackToken    = row.callback_token || '';
+    const receivedAt       = new Date(row.received_at);
+    const expiresAt        = new Date(row.expires_at);
+    const subject          = esc(row.subject          || '(no subject)');
+    const senderEmail      = esc(row.sender_email     || '');
+    const emailBody        = esc(row.email_body       || '(no body)');
+    const classifierOutput = row.classifier_output    || '';
+    const status           = row.status               || '';
+    const decidedBy        = esc(row.decided_by       || '');
+    const decidedAt        = row.decided_at ? new Date(row.decided_at) : null;
+    const callbackUrl      = row.callback_url         || '';
+
+    const classifierBadge = classifierOutput === 'EXTERNAL_REVIEW'
+      ? '<span class="badge badge-external me-1">EXTERNAL_REVIEW</span>'
+      : '<span class="badge badge-unsure me-1">UNSURE</span>';
+
+    const statusMap = {
+      PENDING : '<span class="badge badge-pending">PENDING</span>',
+      APPROVED: '<span class="badge badge-approved">APPROVED</span>',
+      REJECTED: '<span class="badge badge-rejected">REJECTED</span>',
+      EXPIRED : '<span class="badge badge-expired">EXPIRED</span>'
+    };
+    const statusBadge = statusMap[status] || `<span class="badge bg-secondary">${esc(status)}</span>`;
+
+    const now       = new Date();
+    const hoursLeft = Math.max(0, (expiresAt - now) / 3600000);
+    const expiryHtml = isPending
+      ? `<div class="${hoursLeft < 12 ? 'expiry-warn' : 'text-muted'} small">
+           ⏱ Expires: ${expiresAt.toLocaleString('en-IN')}
+           ${hoursLeft < 72 ? `(${Math.round(hoursLeft)}h left)` : ''}
+         </div>`
+      : `<div class="text-muted small">Expires: ${expiresAt.toLocaleString('en-IN')}</div>`;
+
+    const decisionRow = !isPending && decidedBy
+      ? `<div class="text-muted small mt-2">
+           ${statusBadge} by <strong>${decidedBy}</strong>
+           ${decidedAt ? ' at ' + decidedAt.toLocaleString('en-IN') : ''}
+         </div>`
+      : '';
+
+    const bodyPreview = emailBody.length > 200
+      ? emailBody.substring(0, 200) + '<span class="text-primary"> [click to expand]</span>'
+      : emailBody;
+
+    const actionButtons = isPending
+      ? `<div class="d-flex gap-2 mt-3">
+           <button class="btn btn-approve btn-sm px-4"
+             onclick="confirmDecision('${esc(id)}','${esc(callbackUrl)}','${esc(callbackToken)}','APPROVED')">
+             ✅ Approve — Create Ticket
+           </button>
+           <button class="btn btn-reject btn-sm px-4"
+             onclick="confirmDecision('${esc(id)}','${esc(callbackUrl)}','${esc(callbackToken)}','REJECTED')">
+             ❌ Reject — No Ticket
+           </button>
+         </div>`
+      : '';
+
+    return `
+<div class="card">
+  <div class="card-body">
+    <div class="d-flex justify-content-between align-items-start flex-wrap gap-2 mb-2">
+      <div>
+        <div class="fw-semibold mb-1">${subject}</div>
+        <div class="text-muted small mb-1">From: ${senderEmail}</div>
+        <div>${classifierBadge}${isPending ? statusBadge : ''}</div>
+      </div>
+      <div class="text-end">
+        ${expiryHtml}
+        <div class="text-muted small">Received: ${receivedAt.toLocaleString('en-IN')}</div>
+        <div class="text-muted" style="font-size:.7rem">Token: ${esc(callbackToken.substring(0,8))}...</div>
+      </div>
+    </div>
+    <div class="email-body" onclick="this.classList.toggle('expanded')">
+      ${bodyPreview}
+    </div>
+    ${decisionRow}
+    ${actionButtons}
+  </div>
+</div>`;
+  }
+
+  // ── CONFIRM DECISION ───────────────────────────────────────
+  function confirmDecision(id, callbackUrl, callbackToken, decision) {
+    pendingDecision = { id, callbackUrl, callbackToken, decision };
+
+    const isApprove = decision === 'APPROVED';
+    document.getElementById('modal-title').textContent =
+      isApprove ? '✅ Confirm Approval' : '❌ Confirm Rejection';
+    document.getElementById('modal-body').textContent =
+      isApprove
+        ? 'This will resume the PF workflow and create a Jira ticket. Cannot be undone.'
+        : 'This will terminate the PF workflow. No ticket will be created. Cannot be undone.';
+
+    const btn = document.getElementById('modal-confirm-btn');
+    btn.textContent   = isApprove ? 'Approve' : 'Reject';
+    btn.className     = `btn ${isApprove ? 'btn-approve' : 'btn-reject'}`;
+
+    decisionModal = new bootstrap.Modal(document.getElementById('decisionModal'));
+    decisionModal.show();
+  }
+
+  // ── SUBMIT DECISION ────────────────────────────────────────
+  async function submitDecision() {
+    if (!pendingDecision) return;
+    decisionModal.hide();
+
+    const { id, callbackUrl, decision } = pendingDecision;
+    pendingDecision = null;
+
+    // 1. Update Supabase row
+    const updateRes = await fetch(`${SUPABASE_URL}/rest/v1/${TABLE}?id=eq.${id}`, {
+      method : 'PATCH',
+      headers: {
+        'apikey'       : SUPABASE_ANON_KEY,
+        'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
+        'Content-Type' : 'application/json',
+        'Prefer'       : 'return=minimal'
+      },
+      body: JSON.stringify({
+        status    : decision,
+        decided_at: new Date().toISOString(),
+        decided_by: 'portal-user'
+      })
+    });
+
+    if (!updateRes.ok) {
+      alert('Failed to update review status. Please try again.');
+      return;
+    }
+
+    // 2. Call PF Resume API
+    try {
+      const pfRes = await fetch(callbackUrl, {
+        method : 'POST',
+        headers: {
+          'apikey'      : PF_API_KEY,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ decision: decision })
+      });
+
+      const pfBody = await pfRes.text();
+      console.log('PF resume response:', pfRes.status, pfBody);
+
+      if (pfRes.ok) {
+        showResult(decision, true, '');
+      } else {
+        showResult(decision, false, `PF returned HTTP ${pfRes.status}: ${pfBody}`);
+      }
+    } catch (err) {
+      showResult(decision, false, err.message);
+    }
+
+    // 3. Reload
+    await loadReviews();
+  }
+
+  // ── SHOW RESULT ────────────────────────────────────────────
+  function showResult(decision, success, errorMsg) {
+    const isApprove = decision === 'APPROVED';
+    if (success) {
+      alert(`${isApprove ? '✅ APPROVED' : '❌ REJECTED'}\n${isApprove ? 'PF workflow will proceed to ticket creation.' : 'PF workflow terminated. No ticket created.'}`);
+    } else {
+      alert(`Decision saved but PF resume call failed.\n${errorMsg}\nThe decision is recorded in Supabase for audit.`);
+    }
+  }
+
+  // ── UTILITY ────────────────────────────────────────────────
+  function esc(str) {
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
+  // ── INIT ───────────────────────────────────────────────────
+  loadReviews();
+
+  // Auto-refresh every 2 minutes
+  setInterval(loadReviews, 120000);
+
+</script>
+</body>
+</html>
