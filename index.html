@@ -84,9 +84,9 @@
 
   // ── CONFIG ──────────────────────────────────────────────────
   // Replace these with your actual values
-  const SUPABASE_URL     = 'https://hvxgzvqfqlldqhiiprqq.supabase.co';
+  const SUPABASE_URL      = 'https://hvxgzvqfqlldqhiiprqq.supabase.co';
   const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imh2eGd6dnFmcWxsZHFoaWlwcnFxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODc2MjgyNjIsImV4cCI6MjEwMzIwNDI2Mn0.zp1DA8A0eH1YjOUuFSi6jrYMfVE3vleZ_XuER3Dm1kg';
-  const PF_API_KEY        = 'magicplatform.e013B95FB9454CE7a14BadEF301e98D2';
+  const RESUME_FUNCTION   = 'https://hvxgzvqfqlldqhiiprqq.supabase.co/functions/v1/hitl-resume';
   const TABLE             = 'HITL_Reviews';
   // ────────────────────────────────────────────────────────────
 
@@ -282,8 +282,8 @@
       },
       body: JSON.stringify({
         status    : decision,
-        decided_at: new Date().toISOString(),
-        decided_by: 'portal-user'
+        decided_by: 'portal-user',
+        decided_at: new Date().toISOString()
       })
     });
 
@@ -292,24 +292,29 @@
       return;
     }
 
-    // 2. Call PF Resume API
+    // 2. Call PF Resume API via Supabase Edge Function (avoids CORS)
     try {
-      const pfRes = await fetch(callbackUrl, {
+      const pfRes = await fetch(RESUME_FUNCTION, {
         method : 'POST',
         headers: {
-          'apikey'      : PF_API_KEY,
-          'Content-Type': 'application/json'
+          'Content-Type' : 'application/json',
+          'Authorization': `Bearer ${SUPABASE_ANON_KEY}`
         },
-        body: JSON.stringify({ decision: decision })
+        body: JSON.stringify({
+          row_id      : id,
+          callback_url: callbackUrl,
+          decision    : decision,
+          decided_by  : 'portal-user'
+        })
       });
 
-      const pfBody = await pfRes.text();
-      console.log('PF resume response:', pfRes.status, pfBody);
+      const pfData = await pfRes.json();
+      console.log('Resume function response:', pfData);
 
-      if (pfRes.ok) {
+      if (pfData.status === 'ok') {
         showResult(decision, true, '');
       } else {
-        showResult(decision, false, `PF returned HTTP ${pfRes.status}: ${pfBody}`);
+        showResult(decision, false, pfData.message || pfData.error || 'Unknown error');
       }
     } catch (err) {
       showResult(decision, false, err.message);
