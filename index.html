@@ -34,7 +34,7 @@
 <nav class="navbar navbar-dark mb-4">
   <div class="container d-flex justify-content-between">
     <span class="navbar-brand">🔍 PF Support — HITL Review Queue</span>
-    <button class="btn btn-sm btn-outline-light" onclick="loadReviews()">↺ Refresh</button>
+    <button class="btn btn-sm btn-outline-light" id="refresh-btn" onclick="handleRefresh()">↺ Refresh</button>
   </div>
 </nav>
 
@@ -203,7 +203,7 @@
       : '';
 
     const bodyPreview = emailBody.length > 200
-      ? emailBody.substring(0, 200) + '<span class="text-primary"> [click to expand]</span>'
+      ? emailBody.substring(0, 200) + '<span class="text-primary expand-hint"> [click to expand]</span>'
       : emailBody;
 
     const actionButtons = isPending
@@ -234,7 +234,7 @@
         <div class="text-muted" style="font-size:.7rem">Token: ${esc(callbackToken.substring(0,8))}...</div>
       </div>
     </div>
-    <div class="email-body" onclick="this.classList.toggle('expanded')">
+    <div class="email-body" onclick="this.classList.toggle('expanded'); const hint = this.querySelector('.expand-hint'); if(hint) hint.textContent = this.classList.contains('expanded') ? '[click to collapse]' : '[click to expand]';">
       ${bodyPreview}
     </div>
     ${decisionRow}
@@ -345,6 +345,15 @@
   }
 
   // ── INIT ───────────────────────────────────────────────────
+  async function handleRefresh() {
+    const btn = document.getElementById('refresh-btn');
+    btn.textContent = '↺ Refreshing...';
+    btn.disabled = true;
+    await loadReviews();
+    btn.textContent = '↺ Refresh';
+    btn.disabled = false;
+  }
+
   loadReviews();
 
   // Auto-refresh every 2 minutes
