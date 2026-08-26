@@ -12,8 +12,7 @@
     .card          { border:none; box-shadow:0 1px 4px rgba(0,0,0,.1); margin-bottom:16px; }
     .section-title { font-size:1.1rem; font-weight:600; margin:24px 0 12px; }
     .email-body    { background:#f8f9fa; border-radius:4px; padding:8px;
-                     font-size:.85rem; white-space:pre-wrap; max-height:100px;
-                     overflow:hidden; cursor:pointer; }
+                     font-size:.85rem; white-space:pre-wrap; cursor:pointer; }
     .email-body.expanded { max-height:2000px; overflow:visible; }
     .expiry-warn   { color:#c0392b; font-weight:500; }
     .badge-unsure    { background:#f0ad4e; color:#fff; }
@@ -206,6 +205,10 @@
       ? emailBody.substring(0, 200) + '<span class="text-primary expand-hint"> [click to expand]</span>'
       : emailBody;
 
+    const bodyFull = emailBody.length > 200
+      ? `<span class="body-collapsed">${emailBody.substring(0, 200)}<span class="text-primary expand-hint"> [click to expand]</span></span><span class="body-expanded" style="display:none">${emailBody}</span>`
+      : emailBody;
+
     const actionButtons = isPending
       ? `<div class="d-flex gap-2 mt-3">
            <button class="btn btn-approve btn-sm px-4"
@@ -234,8 +237,16 @@
         <div class="text-muted" style="font-size:.7rem">Token: ${esc(callbackToken.substring(0,8))}...</div>
       </div>
     </div>
-    <div class="email-body" onclick="this.classList.toggle('expanded'); const hint = this.querySelector('.expand-hint'); if(hint) hint.textContent = this.classList.contains('expanded') ? '[click to collapse]' : '[click to expand]';">
-      ${bodyPreview}
+    <div class="email-body" onclick="
+      const collapsed = this.querySelector('.body-collapsed');
+      const expanded  = this.querySelector('.body-expanded');
+      if (collapsed && expanded) {
+        const isExpanded = expanded.style.display !== 'none';
+        collapsed.style.display = isExpanded ? '' : 'none';
+        expanded.style.display  = isExpanded ? 'none' : '';
+      }
+    ">
+      ${bodyFull}
     </div>
     ${decisionRow}
     ${actionButtons}
